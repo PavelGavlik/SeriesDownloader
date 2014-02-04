@@ -2,6 +2,8 @@
   (:gen-class)
   [:import
    [java.net URL URLEncoder]
+   [java.text SimpleDateFormat]
+   [java.util Date]
    [javax.xml parsers.DocumentBuilderFactory xpath.XPathFactory xpath.XPathConstants]])
 (use 'clojure.java.io
      'clojure.pprint
@@ -27,7 +29,7 @@
 
 (defn slurp-url [& url-parts]
   (with-open [rdr (clojure.java.io/reader (clojure.string/join url-parts))]
-         (clojure.string/join "\n" (line-seq rdr))))
+    (clojure.string/join "\n" (line-seq rdr))))
 
 (defn node-list-to-lazy-seq [node-list]
   (for [i (range (.getLength node-list))]
@@ -44,15 +46,14 @@
 (defn xml-remote-document [& url-parts]
   (xml-document (.openStream (URL. (clojure.string/join url-parts)))))
 
-(defn xpath-string [document xpath-expr]
+(defn xpath [cast-type document xpath-expr]
   (-> (XPathFactory/newInstance)
       .newXPath
-      (.evaluate xpath-expr document)))
+      (.evaluate xpath-expr document cast-type)))
 
-(defn xpath-nodelist [document xpath-expr]
-  (-> (XPathFactory/newInstance)
-      .newXPath
-      (.evaluate xpath-expr document XPathConstants/NODESET)))
+(def xpath-string (partial xpath XPathConstants/STRING))
+(def xpath-number (partial xpath XPathConstants/NUMBER))
+(def xpath-node-list (partial xpath XPathConstants/NODESET))
 
 
 (defn series-id-from-tvdb [series-name]
@@ -67,13 +68,13 @@
   (map-node-list #(hash-map
                    :name (xpath-string % "EpisodeName")
                    :aired (xpath-string % "FirstAired")
-                   :episode-number (xpath-string % "EpisodeNumber")
-                   :season-number (xpath-string % "SeasonNumber")
+                   :episode-number (xpath-number % "EpisodeNumber")
+                   :season-number (xpath-number % "SeasonNumber")
                    )
-                 (xpath-nodelist (xml-remote-document "http://thetvdb.com/api/"
-                                                      tvdb-api-key "/series/"
-                                                      series-id "/all/en.xml")
-                                 "//Data/Episode")))
+                 (xpath-node-list (xml-remote-document "http://thetvdb.com/api/"
+                                                       tvdb-api-key "/series/"
+                                                       series-id "/all/en.xml")
+                                  "//Data/Episode")))
 
 
 (defn series-id [tvdb series-name]
@@ -82,8 +83,7 @@
 
 (defn episode-list [tvdb series-name series-id]
   (or (get-in tvdb [series-name :episodes])
-      (group-by :season-number
-                (episode-list-from-tvdb series-name series-id))))
+      (episode-list-from-tvdb series-name series-id)))
 
 
 (defn series-ids [tvdb]
@@ -98,12 +98,45 @@
       (swap! newdb assoc-in [name :episodes] (episode-list tvdb name id)))
     @newdb))
 
-(defn download-show [[name last-downloaded]]
-  (println "Checking air dates for" name))
+(defn available-episode-list [series]
+  (filter
+   #(and
+     (>= (% :season-number) (series :last-downloaded-season))
+     (> (% :episode-number) (series :last-downloaded-episode))
+     (= 10 (count (% :aired)))
+     (->
+      (SimpleDateFormat. "yyyy-MM-dd")
+      (.parse (% :aired))
+      (.before (Date.))))
+   (series :episodes)))
 
-;(swap! tvdb (fn [_] (read-tvdb)))
+(defn download-torrent [torrent-name]
+  (println "Downloading" torrent-name))
+
+(defn download-one-series [series-name series-data]
+  (let [download-list (->
+                       series-data
+                       available-episode-list)
+        last-episode (last download-list)]
+    (map #(download-torrent (str series-name %))
+         (series-downloader.epstring/from-episode-list download-list))
+    (if last-episode
+      (assoc series-data
+        :last-downloaded-season (last-episode :season-number)
+        :last-downloaded-episode (last-episode :episode-number))
+      series-data)))
+
+(defn download-series [tvdb]
+  (let [newdb (atom tvdb)]
+    (doseq [[name data] tvdb]
+      (swap! newdb assoc-in [name] (download-one-series name data)))
+    @newdb))
+
+
+(swap! tvdb (fn [_] (read-tvdb)))
 ;(swap! tvdb series-ids)
 ;(swap! tvdb episode-lists)
+;(swap! tvdb download-series)
 ;(write-tvdb @tvdb)
 
 (defn -main [& args]
