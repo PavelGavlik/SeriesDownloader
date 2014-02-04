@@ -2,13 +2,11 @@
   (:gen-class)
   [:import
    [java.net URL URLEncoder]
-   [java.io BufferedReader InputStreamReader]
    [javax.xml parsers.DocumentBuilderFactory xpath.XPathFactory]])
 (use 'clojure.java.io
      'series-downloader.epstring)
 
 (def tvdb-file "tvdb.clj")
-(def series-file "series.clj")
 (def tvdb-api-key "6C4BF2A213C012E2")
 
 (defn deserialize [file]
@@ -19,9 +17,8 @@
 
 (def read-tvdb (partial deserialize tvdb-file))
 (def write-tvdb (partial serialize tvdb-file))
-(def read-series (partial deserialize series-file))
-(def write-series (partial serialize series-file))
 
+(def tvdb (atom {}))
 
 (defn slurp-url [& url-parts]
   (with-open [rdr (clojure.java.io/reader (clojure.string/join url-parts))]
@@ -42,37 +39,42 @@
 
 
 (defn series-id-from-tvdb [series-name]
+  (println "Getting id from tvdb for" series-name)
   (xpath-from-url
-   (str "http://thetvdb.com/api/GetSeries.php?seriesname=" (URLEncoder/encode series-name))
+   (str "http://thetvdb.com/api/GetSeries.php?seriesname="
+        (URLEncoder/encode series-name))
    "//Data/Series/id"))
 
-(defn series-id-from-cache [series-name]
-  (get-in @tvdb [series-name :id]))
+(defn episode-list-from-tvdb [series-id])
 
-(defn series-id [series-name]
-  (or (series-id-from-cache series-name)
+
+(defn series-id [tvdb series-name]
+  (or (get-in tvdb [series-name :id])
       (series-id-from-tvdb series-name)))
 
-(defn fill-tvdb [tvdb]
-  (for [name (keys @tvdb)]
-    (reset! tvdb (update-in @tvdb [name :id] (fnil identity (series-id name)))))
-  nil)
-;;(.getDate (get (read-tvdb) "How I Met Your Mother"))
-;; (write-tvdb {"How I Met Your Mother" (java.util.Date.)})
-;;(map series-id (keys (read-series)))
-(def tvdb (atom (read-series)))
-@tvdb
-(fill-tvdb tvdb)
+(defn episode-list [series-id])
 
-;(def tvdb [{:name "How I Met Your Mother" :last-downloaded "S09E15"}
-;           {:name "Archer" :last-downloaded "S05E02"}
-;           {:name "Blacklist" :last-downloaded "S01E12"}])
+
+(defn series-ids [tvdb]
+  (let [newdb (atom tvdb)]
+    (doseq [[name] tvdb]
+      (swap! newdb assoc-in [name :id] (series-id tvdb name)))
+    @newdb))
+
+(defn episode-lists [tvdb]
+  (let [newdb (atom tvdb)]
+    (doseq [[name {:keys [id]}] tvdb]
+      (swap! newdb assoc-in [name :episodes] (episode-list id)))
+    @newdb))
 
 (defn download-show [[name last-downloaded]]
   (println "Checking air dates for" name))
 
+(swap! tvdb (fn [_] (read-tvdb)))
+(swap! tvdb series-ids)
+(episode-lists @tvdb)
+(write-tvdb @tvdb)
+
 (defn -main [& args]
   (println "Starting Series Downloader...")
-  (with-open [rdr (reader series-file)]
-    (doseq [line (line-seq rdr)]
-      (download-show (clojure.string/split line #";")))))
+  )
