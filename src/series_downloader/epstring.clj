@@ -5,9 +5,9 @@
     (str "S" (formatter season-number) "E" (formatter episode-number))))
 
 (defn from-episode-list [episode-list]
-  (map
-   #(series-downloader.epstring/from-int (% :season-number) (% :episode-number))
-   episode-list))
+  (for [ep episode-list]
+   (series-downloader.epstring/from-int (ep :season-number) (ep :episode-number))
+   ))
 
 (defn to-int [ep-string]
   (map #(Integer. %) (rest (re-find #"^S(\d+)E(\d+)" ep-string))))

@@ -1,12 +1,13 @@
 (ns series-downloader.core
   (:gen-class)
+  (:require [clj-http.client :as client])
   [:import
    [java.net URL URLEncoder]
+   [java.io.*]
    [java.text SimpleDateFormat]
    [java.util Date]
    [javax.xml parsers.DocumentBuilderFactory xpath.XPathFactory xpath.XPathConstants]])
-(use 'clojure.java.io
-     'clojure.pprint
+(use 'clojure.pprint
      'series-downloader.epstring)
 
 (def tvdb-file "tvdb.clj")
@@ -19,17 +20,22 @@
 
 (defn serialize [file tvdb]
   (spit file
-        (pr-str tvdb)
-        ;(with-out-str (clojure.pprint/pprint tvdb))
-        ))
+        (pr-str tvdb)))
 
 (def read-tvdb (partial deserialize tvdb-file))
 (def write-tvdb (partial serialize tvdb-file))
 
+(defn sh [& url-parts]
+  (->
+   (Runtime/getRuntime)
+   (.exec (clojure.string/join url-parts))
+   .getInputStream
+   clojure.java.io/reader
+   line-seq
+   clojure.string/join))
 
 (defn slurp-url [& url-parts]
-  (with-open [rdr (clojure.java.io/reader (clojure.string/join url-parts))]
-    (clojure.string/join "\n" (line-seq rdr))))
+  ((clj-http.client/get (clojure.string/join url-parts)) :body))
 
 (defn node-list-to-lazy-seq [node-list]
   (for [i (range (.getLength node-list))]
@@ -111,34 +117,50 @@
    (series :episodes)))
 
 (defn download-torrent [torrent-name]
-  (println "Downloading" torrent-name))
+  (sh "open "
+      (last
+       (re-find #"href=\"([^\">]*)\"[^>]*>Magnet Link"
+                (slurp-url "http://bitsnoop.com"
+                           (last
+                            (re-find #"<a href=\"(.*?)\".*?<span id=\"hdr"
+                                     (slurp-url "http://bitsnoop.com/search/all/" torrent-name "/c/d/1/"))))))))
 
 (defn download-one-series [series-name series-data]
   (let [download-list (->
                        series-data
                        available-episode-list)
         last-episode (last download-list)]
-    (map #(download-torrent (str series-name %))
-         (series-downloader.epstring/from-episode-list download-list))
-    (if last-episode
-      (assoc series-data
-        :last-downloaded-season (last-episode :season-number)
-        :last-downloaded-episode (last-episode :episode-number))
-      series-data)))
+    (println series-name download-list)
+    (for [ep (series-downloader.epstring/from-episode-list download-list)]
+      (download-torrent (str series-name " " ep))
+
+    )))
+;;     (if last-episode
+;;       (assoc series-data
+;;         :last-downloaded-season (last-episode :season-number)
+;;         :last-downloaded-episode (last-episode :episode-number))
+;;       series-data)))
 
 (defn download-series [tvdb]
   (let [newdb (atom tvdb)]
-    (doseq [[name data] tvdb]
-      (swap! newdb assoc-in [name] (download-one-series name data)))
-    @newdb))
-
-
-(swap! tvdb (fn [_] (read-tvdb)))
-;(swap! tvdb series-ids)
-;(swap! tvdb episode-lists)
-;(swap! tvdb download-series)
-;(write-tvdb @tvdb)
+    (for [[name data] tvdb]
+      (swap! newdb assoc-in [name] (download-one-series name data)))))
 
 (defn -main [& args]
   (println "Starting Series Downloader...")
-  )
+  (swap! tvdb (fn [_] (read-tvdb)))
+  (swap! tvdb series-ids)
+  (swap! tvdb episode-lists)
+  (download-series @tvdb)
+  (write-tvdb @tvdb))
+
+(defn fact [n]
+  (reduce *' (range 1 (+ n 1))))
+
+(defn -parallel []
+  (println "Testing sequential factorials")
+  (time (doall (map #(fact %) (range 1 2000))))
+  (println "Testing parallel factorials")
+  (time (doall (pmap #(fact %) (range 1 2000))))
+  (shutdown-agents)
+)
